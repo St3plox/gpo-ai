@@ -5,6 +5,9 @@ import matplotlib.pyplot as plt
 import tensorflow.keras as krs
 import numpy
 from keras.datasets import mnist
+import matplotlib.pyplot as plt
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+
 nw = 28
 nh = 28
 num_hide = 98
@@ -12,6 +15,7 @@ num_hide = 98
 (trainx, trainy), (testx, testy) = mnist.load_data()
 # нормируем от -1 до 1 изображения цифр
 all_image = (trainx/255.0-0.5)*1.999
+
 # добавляем дополнительное измерение соответствующее одной цветовой карте
 all_image = numpy.expand_dims(all_image, axis=3)
 # задаем входной слой экодера высота на ширину на количество карт
@@ -20,12 +24,12 @@ encoder_input = krs.layers.Input(shape=(nw,nh,1))
 # оставляет тот же размер карты 28*28
 lay = krs.layers.Conv2D(32, (3, 3), strides = (2,2), activation='relu', padding='same')(encoder_input)
 lay = krs.layers.Dropout(0.15)(lay)
-lay = krs.layers.Conv2D(64, (3, 3), strides = (2,2),activation='relu', padding='same')(lay)
+lay = krs.layers.Conv2D(64, (3, 3), strides = (2,2), activation='relu', padding='same')(lay)
 # добавляем слой прореживания
 lay = krs.layers.Dropout(0.15)(lay)
-lay = krs.layers.Conv2D(128, (3, 3), strides = (2,2),activation='relu', padding='same')(lay)
+lay = krs.layers.Conv2D(128, (3, 3), strides = (2,2), activation='relu', padding='same')(lay)
 lay = krs.layers.Dropout(0.15)(lay)
-lay = krs.layers.Conv2D(256, (3, 3), strides = (2,2),activation='relu', padding='same')(lay)
+lay = krs.layers.Conv2D(256, (3, 3), strides = (2,2), activation='relu', padding='same')(lay)
 # слой который многомерный тензорный слой превращает в плоский вектор
 lay = krs.layers.Flatten()(lay)
 # выходной кодирующий слой
@@ -55,7 +59,7 @@ autoencoder = krs.Model(encoder_input,lay_out)
 krs.utils.plot_model(autoencoder, to_file='.\out\autoencoder.png', show_shapes=True)
 # компилируем модель автоэнкодера с функцией потерь mse и скоростью обучения 0.0002
 autoencoder.compile(loss='mean_squared_error', optimizer=krs.optimizers.Adam(learning_rate=0.0002),
-                  metrics=['accuracy'])
+                  metrics=['accuracy', krs.metrics.Precision(), krs.metrics.Recall()])
 # запускаем 40 эпох обучения с размером батча 4000
 ep = 40
 autoencoder.fit(x = all_image,y = all_image,batch_size = 4000,epochs = ep)
@@ -73,6 +77,8 @@ plt.show()
 # реализуем работу  с энкодером получая скрытый кодовый слой
 from scipy.cluster.vq import kmeans2
 out_vec = encoder.predict(all_image)
+
+
 # получим центроиды кластеров для 10 кластеров
 centroid, label = kmeans2(out_vec, 10, minit='++')
 
@@ -93,9 +99,38 @@ fig = plt.figure(figsize=(5,5))
 ax = fig.add_subplot(1,1,1)
 # рисуем на графике кластер объектов в виде среднее дисперсия
 for i in range(10):
-    mask = label == i
-    ax.scatter(outm[mask],outstd[mask])
+  mask = label == i
+  ax.scatter(out_vec[mask,0],out_vec[mask,1])
+  plt.text(centroid[i,0], centroid[i,1], i , fontdict=None)
 plt.show()
+
+centroid, label = kmeans2(out_vec, 10, minit='++')
+
+# Count the number of data points in each cluster
+cluster_sizes = numpy.bincount(label)
+
+# Plot a histogram of cluster sizes
+plt.figure(figsize=(8, 6))
+plt.bar(range(len(cluster_sizes)), cluster_sizes, color='skyblue')
+plt.xlabel('Cluster')
+plt.ylabel('Number of Data Points')
+plt.title('Histogram of Cluster Sizes (Autoencoder 1)')
+plt.show()
+
+# Compute silhouette score
+silhouette = silhouette_score(out_vec, label)
+
+# Compute Davies-Bouldin index
+davies_bouldin = davies_bouldin_score(out_vec, label)
+
+# Compute Calinski-Harabasz index
+calinski_harabasz = calinski_harabasz_score(out_vec, label)
+
+# Print the cluster validity metrics
+print("Cluster Validity Metrics (Autoencoder 1):")
+print("Silhouette Score:", silhouette)
+print("Davies-Bouldin Index:", davies_bouldin)
+print("Calinski-Harabasz Index:", calinski_harabasz)
 
 # реализуем другой способ кластеризации, с помощью автоэкодера с дескриптором размером 2
 # эти два значения и будут использоваться как двумерные координаты кластера
@@ -115,7 +150,7 @@ lay_out1 = decoder1(lay_out_encoder1)
 autoencoder1 = krs.Model(encoder_input1,lay_out1)
 krs.utils.plot_model(autoencoder1, to_file='.\out\autoencoder1.png', show_shapes=True)
 autoencoder1.compile(loss='mean_squared_error', optimizer=krs.optimizers.Adam(learning_rate=0.0002),
-                  metrics=['accuracy'])
+                  metrics=['accuracy', krs.metrics.Precision(), krs.metrics.Recall()])
 
 autoencoder1.fit(x = out_vec,y = out_vec,batch_size = 4000,epochs = ep*8)
 out_vec = encoder1.predict(out_vec)
@@ -131,3 +166,33 @@ for i in range(10):
   ax.scatter(out_vec[mask,0],out_vec[mask,1])
   plt.text(centroid[i,0], centroid[i,1], i , fontdict=None)
 plt.show()
+
+# Perform clustering on the latent space representations obtained from the encoder1
+centroid1, label1 = kmeans2(out_vec, 10, minit='random')
+
+# Count the number of data points in each cluster
+cluster_sizes1 = numpy.bincount(label1)
+
+# Plot a histogram of cluster sizes
+plt.figure(figsize=(8, 6))
+plt.bar(range(len(cluster_sizes1)), cluster_sizes1, color='lightgreen')
+plt.xlabel('Cluster')
+plt.ylabel('Number of Data Points')
+plt.title('Histogram of Cluster Sizes (Autoencoder 2)')
+plt.show()
+
+# Compute silhouette score
+silhouette1 = silhouette_score(out_vec, label1)
+
+# Compute Davies-Bouldin index
+davies_bouldin1 = davies_bouldin_score(out_vec, label1)
+
+# Compute Calinski-Harabasz index
+calinski_harabasz1 = calinski_harabasz_score(out_vec, label1)
+
+# Print the cluster validity metrics
+print("Cluster Validity Metrics (Autoencoder 2):")
+print("Silhouette Score:", silhouette1)
+print("Davies-Bouldin Index:", davies_bouldin1)
+print("Calinski-Harabasz Index:", calinski_harabasz1)
+
