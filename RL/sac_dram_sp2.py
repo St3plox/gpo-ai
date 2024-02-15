@@ -359,25 +359,30 @@ class sac:
             qv, qvt = [], []
             for i in range(2):
                 qv.append(self.modelq[i](inp, training = True))
-                #qvt.append(self.targetq[i](inp, training = True))
+                qvt.append(self.targetq[i](inp, training = True))
             y_pii = self.modelp(inp, training = True)
             y_pii = tf.clip_by_value(y_pii,1e-10,1.0)
             pol = tf.clip_by_value(pol,1e-10,1.0)
 
             #x = tf.one_hot(tf.squeeze(actn), depth=self.len_act)
-            rel = y_pii/pol
-            rel = tf.clip_by_value(rel, 0.9,1.1)
             #y_pii = pol*(1.0-x) + pol*rel
-            y_pii1 = rel*pol
-            y_pii1 = y_pii1/ tf.reduce_sum(y_pii1,axis=-1)[:,None]
             logpi = tf.math.log(y_pii)
-            logpi1 = tf.math.log(y_pii1)
+            logpol = tf.math.log(pol)
             entr = - tf.reduce_mean(tf.reduce_sum(y_pii*logpi, axis=-1))
             minq = tf.minimum(qv[0], qv[1])
+            minqt = tf.minimum(qvt[0], qvt[1])
+
+
+
+
 
             dif1 = y_pii*(tf.stop_gradient(self.alphav)*logpi - minq)
-            dif2 = y_pii1*(tf.stop_gradient(self.alphav)*logpi1 - minq)
-            dif = tf.reduce_sum(tf.maximum(dif1,dif2),axis=-1)
+            dif2 = pol*(tf.stop_gradient(self.alphav)*logpol - minqt)
+            dif = tf.square(dif1-dif2)
+
+
+
+            dif = dif1 + dif*0.1
 
 
 
