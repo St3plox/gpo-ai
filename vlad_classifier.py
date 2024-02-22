@@ -1,16 +1,14 @@
-# MIT License
-# Copyright (c) 2023 saysaysx
-
 import matplotlib.pyplot as plt
 import tensorflow.keras as krs
 import numpy
 from keras.datasets import mnist
 import matplotlib.pyplot as plt
-from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+from sklearn.metrics import roc_curve, auc
 
 nw = 28
 nh = 28
 num_hide = 98
+ep = 40
 # загружаем примеры обучения mnist (рукописные цифры)
 (trainx, trainy), (testx, testy) = mnist.load_data()
 # нормируем от -1 до 1 изображения цифр
@@ -20,8 +18,7 @@ all_image = (trainx/255.0-0.5)*1.999
 all_image = numpy.expand_dims(all_image, axis=3)
 # задаем входной слой экодера высота на ширину на количество карт
 encoder_input = krs.layers.Input(shape=(nw,nh,1))
-# задаем сверточный слой с 32 фильтрами-картами и фильтрами 3 на 3
-# оставляет тот же размер карты 28*28
+
 lay = krs.layers.Conv2D(32, (3, 3), strides = (2,2), activation='relu', padding='same')(encoder_input)
 lay = krs.layers.Dropout(0.15)(lay)
 lay = krs.layers.Conv2D(64, (3, 3), strides = (2,2), activation='relu', padding='same')(lay)
@@ -36,163 +33,47 @@ lay = krs.layers.Flatten()(lay)
 lay_out_encoder = krs.layers.Dense(num_hide, activation="linear", name='den4')(lay)
 # создаем сеть энкодера
 encoder = krs.Model(encoder_input, lay_out_encoder)
-
-# создание сети декодера, входной слой
-decoder_input = krs.layers.Input(shape=(num_hide,))
-lay = krs.layers.Dense(128*7*7)(decoder_input)
-# преобразуем плоский слой в многомерный тензор 7*7*128
-lay = krs.layers.Reshape(target_shape=(7,7,128))(lay)
-lay = krs.layers.Conv2D(128, (3, 3), activation='relu', padding='same')(lay)
-# повышаем размерность карты в два раза, будет 14*14
-# можно использовать билинейную интерполяцию если хотите
-lay = krs.layers.UpSampling2D(size=(2,2))(lay)
-lay = krs.layers.Conv2D(64, (3, 3), activation='relu', padding='same')(lay)
-lay = krs.layers.UpSampling2D(size=(2,2))(lay)
-lay_out_decoder = krs.layers.Conv2D(1, (3, 3), activation='tanh', padding='same')(lay)
-# создаем сеть декодера
-decoder = krs.Model(decoder_input,lay_out_decoder)
-
-# объединяем обе сети в автоэнкодер
-lay_out = decoder(lay_out_encoder)
-autoencoder = krs.Model(encoder_input,lay_out)
-# полученный вид модели сохраняем в файле в виде изображения
-krs.utils.plot_model(autoencoder, to_file='.\out\autoencoder.png', show_shapes=True)
-# компилируем модель автоэнкодера с функцией потерь mse и скоростью обучения 0.0002
-autoencoder.compile(loss='mean_squared_error', optimizer=krs.optimizers.Adam(learning_rate=0.0002),
-                  metrics=['accuracy', krs.metrics.Precision(), krs.metrics.Recall()])
-# запускаем 40 эпох обучения с размером батча 4000
-ep = 40
-autoencoder.fit(x = all_image,y = all_image,batch_size = 4000,epochs = ep)
-
-# получаем выход автоэнкодера, изображения который он получает
-index = numpy.random.randint(0,len(all_image),9)
-out_img = autoencoder.predict(all_image[index])
-# выводим их на графике
-fig = plt.figure(figsize=(5,5))
-for i in range(3):
-    for j in range(3):
-        ax = fig.add_subplot(3,3,i*3+j+1)
-        ax.imshow(out_img[i*3+j][:,:,0])
-plt.show()
-# реализуем работу  с энкодером получая скрытый кодовый слой
-from scipy.cluster.vq import kmeans2
 out_vec = encoder.predict(all_image)
 
+all_out = krs.utils.to_categorical(trainy)
+num_classes = 10
+classifier_input = krs.layers.Input(shape=(num_hide,))
+encoder.trainable = False
+lay = krs.layers.Dense(128, activation='relu')(classifier_input)
+lay = krs.layers.Dense(256, activation='relu')(lay)
+lay = krs.layers.Dense(512, activation='relu')(lay)
+lay = krs.layers.Dense(512, activation='relu')(lay)
+lay = krs.layers.Dense(256, activation='relu')(lay)
+lay = krs.layers.Dense(128, activation='relu')(classifier_input)
+lay = krs.layers.Dense(10, activation='softmax')(lay)
+classifier_output = krs.layers.Dense(num_classes, activation="softmax", name='den4')(lay)
+classificator = krs.Model(classifier_input, classifier_output)
+classificator.compile(loss='binary_crossentropy', optimizer=krs.optimizers.Adam(learning_rate = 0.0002),
+                      metrics=['accuracy', krs.metrics.Precision(), krs.metrics.Recall()])
 
-# получим центроиды кластеров для 10 кластеров
-centroid, label = kmeans2(out_vec, 10, minit='++')
+classificator.fit(x = out_vec, y = all_out, batch_size = 8000 ,epochs = ep * 3)
 
-# получим центроиды кластеров для 2 кластеров
-centroid1, label1 = kmeans2(out_vec, 2, minit='++')
+test_out_vec = encoder.predict(numpy.expand_dims((testx/255.0-0.5)*1.999, axis=3))
+predictions = classificator.predict(test_out_vec)
 
-# считаем координаты кластера как разность с центроидом
-out_vec1 = (out_vec - centroid1[0])**2
-out_vec2 = (out_vec - centroid1[1])**2
-# берем среднее значение
-outm = out_vec1.mean(axis=1)
-outstd = out_vec2.mean(axis=1)
+# Compute ROC curve and ROC area for each class
+fpr = dict()
+tpr = dict()
+roc_auc = dict()
+for i in range(num_classes):
+    fpr[i], tpr[i], _ = roc_curve((testy == i).astype(int), predictions[:, i])
+    roc_auc[i] = auc(fpr[i], tpr[i])
 
-coutm = centroid.mean(axis=1)
-coutstd = centroid.mean(axis=1)
+# Plot ROC curve for each class
+plt.figure(figsize=(10, 6))
+for i in range(num_classes):
+    plt.plot(fpr[i], tpr[i], lw=2, label=f'ROC curve (class {i}) (AUC = {roc_auc[i]:0.2f})')
 
-fig = plt.figure(figsize=(5,5))
-ax = fig.add_subplot(1,1,1)
-# рисуем на графике кластер объектов в виде среднее дисперсия
-for i in range(10):
-  mask = label == i
-  ax.scatter(out_vec[mask,0],out_vec[mask,1])
-  plt.text(centroid[i,0], centroid[i,1], i , fontdict=None)
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curves for each class')
+plt.legend(loc="lower right")
 plt.show()
-
-centroid, label = kmeans2(out_vec, 10, minit='++')
-
-# Count the number of data points in each cluster
-cluster_sizes = numpy.bincount(label)
-
-# Plot a histogram of cluster sizes
-plt.figure(figsize=(8, 6))
-plt.bar(range(len(cluster_sizes)), cluster_sizes, color='skyblue')
-plt.xlabel('Cluster')
-plt.ylabel('Number of Data Points')
-plt.title('Histogram of Cluster Sizes (Autoencoder 1)')
-plt.show()
-
-# Compute silhouette score
-silhouette = silhouette_score(out_vec, label)
-
-# Compute Davies-Bouldin index
-davies_bouldin = davies_bouldin_score(out_vec, label)
-
-# Compute Calinski-Harabasz index
-calinski_harabasz = calinski_harabasz_score(out_vec, label)
-
-# Print the cluster validity metrics
-print("Cluster Validity Metrics (Autoencoder 1):")
-print("Silhouette Score:", silhouette)
-print("Davies-Bouldin Index:", davies_bouldin)
-print("Calinski-Harabasz Index:", calinski_harabasz)
-
-# реализуем другой способ кластеризации, с помощью автоэкодера с дескриптором размером 2
-# эти два значения и будут использоваться как двумерные координаты кластера
-encoder_input1 = krs.layers.Input(shape=(num_hide))
-lay = krs.layers.Dense(2000, activation="relu")(encoder_input1)
-lay = krs.layers.Dense(500, activation="relu")(lay)
-lay = krs.layers.Dense(100, activation="relu")(lay)
-lay_out_encoder1 = krs.layers.Dense(2, activation="linear", name='den')(lay)
-encoder1 = krs.Model(encoder_input1, lay_out_encoder1)
-decoder_input1 = krs.layers.Input(shape=(2,))
-lay = krs.layers.Dense(100, activation="relu")(decoder_input1)
-lay = krs.layers.Dense(500, activation="relu")(lay)
-lay = krs.layers.Dense(2000, activation="relu")(lay)
-lay_out_decoder1 = krs.layers.Dense(num_hide, activation="linear")(lay)
-decoder1 = krs.Model(decoder_input1,lay_out_decoder1)
-lay_out1 = decoder1(lay_out_encoder1)
-autoencoder1 = krs.Model(encoder_input1,lay_out1)
-krs.utils.plot_model(autoencoder1, to_file='.\out\autoencoder1.png', show_shapes=True)
-autoencoder1.compile(loss='mean_squared_error', optimizer=krs.optimizers.Adam(learning_rate=0.0002),
-                  metrics=['accuracy', krs.metrics.Precision(), krs.metrics.Recall()])
-
-autoencoder1.fit(x = out_vec,y = out_vec,batch_size = 4000,epochs = ep*8)
-out_vec = encoder1.predict(out_vec)
-fig = plt.figure(figsize=(5,5))
-ax = fig.add_subplot(1,1,1)
-centroid, label = kmeans2(out_vec, 10, minit='random')
-print(label)
-print(label.shape)
-
-# рисуем полученные кластера цифр
-for i in range(10):
-  mask = label == i
-  ax.scatter(out_vec[mask,0],out_vec[mask,1])
-  plt.text(centroid[i,0], centroid[i,1], i , fontdict=None)
-plt.show()
-
-# Perform clustering on the latent space representations obtained from the encoder1
-centroid1, label1 = kmeans2(out_vec, 10, minit='random')
-
-# Count the number of data points in each cluster
-cluster_sizes1 = numpy.bincount(label1)
-
-# Plot a histogram of cluster sizes
-plt.figure(figsize=(8, 6))
-plt.bar(range(len(cluster_sizes1)), cluster_sizes1, color='lightgreen')
-plt.xlabel('Cluster')
-plt.ylabel('Number of Data Points')
-plt.title('Histogram of Cluster Sizes (Autoencoder 2)')
-plt.show()
-
-# Compute silhouette score
-silhouette1 = silhouette_score(out_vec, label1)
-
-# Compute Davies-Bouldin index
-davies_bouldin1 = davies_bouldin_score(out_vec, label1)
-
-# Compute Calinski-Harabasz index
-calinski_harabasz1 = calinski_harabasz_score(out_vec, label1)
-
-# Print the cluster validity metrics
-print("Cluster Validity Metrics (Autoencoder 2):")
-print("Silhouette Score:", silhouette1)
-print("Davies-Bouldin Index:", davies_bouldin1)
-print("Calinski-Harabasz Index:", calinski_harabasz1)
-
